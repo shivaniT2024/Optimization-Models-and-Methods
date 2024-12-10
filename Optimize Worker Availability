@@ -1,0 +1,102 @@
+import gurobipy as gp
+from gurobipy import GRB
+import pandas as pd
+import numpy as np
+
+workers = [i for i in range(1, 101)]
+departments = ['Battery', 'Body', 'Assembly', 'Paint', 'Quality']
+shifts = ['Morning', 'Afternoon', 'Night']
+days = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun']
+
+workers_df = pd.DataFrame({
+    'Worker_ID': np.repeat(workers, len(departments) * len(shifts) * len(days)),
+    'Department': np.tile(np.repeat(departments, len(shifts) * len(days)), len(workers)),
+    'Shift': np.tile(np.repeat(shifts, len(days)), len(workers) * len(departments)),
+    'Day': np.tile(days, len(workers) * len(departments) * len(shifts)),
+    'Availability': np.random.choice([0, 1], len(workers) * len(departments) * len(shifts) * len(days)),
+    'Preference_Score': np.random.randint(1, 10, len(workers) * len(departments) * len(shifts) * len(days)),
+    'Effectiveness_Score': np.random.randint(1, 10, len(workers) * len(departments) * len(shifts) * len(days))
+})
+
+dept_df = pd.DataFrame({
+    'Department': np.repeat(departments, len(shifts) * len(days)),
+    'Shift': np.tile(np.repeat(shifts, len(days)), len(departments)),
+    'Day': np.tile(days, len(departments) * len(shifts)),
+    'Min_Workers': np.random.randint(1, 5, len(departments) * len(shifts) * len(days)),
+    'Max_Workers': np.random.randint(5, 10, len(departments) * len(shifts) * len(days))
+})
+
+model = gp.Model("SchedulingOptimization")
+
+x = model.addVars(
+    [(w, p, d, s) for w in workers for p in departments for d in days for s in shifts],
+    vtype=GRB.BINARY,
+    name="x"
+)
+
+model.setObjective(
+    gp.quicksum(
+        workers_df[(workers_df['Worker_ID'] == w) &
+                   (workers_df['Department'] == p) &
+                   (workers_df['Day'] == d) &
+                   (workers_df['Shift'] == s)]['Preference_Score'].values[0] *
+        workers_df[(workers_df['Worker_ID'] == w) &
+                   (workers_df['Department'] == p) &
+                   (workers_df['Day'] == d) &
+                   (workers_df['Shift'] == s)]['Effectiveness_Score'].values[0] *
+        x[w, p, d, s]
+        for w in workers for p in departments for d in days for s in shifts
+    ),
+    GRB.MAXIMIZE
+)
+
+for w in workers:
+    for p in departments:
+        for d in days:
+            for s in shifts:
+                availability = workers_df[(workers_df['Worker_ID'] == w) &
+                                          (workers_df['Department'] == p) &
+                                          (workers_df['Day'] == d) &
+                                          (workers_df['Shift'] == s)]['Availability'].values[0]
+                model.addConstr(x[w, p, d, s] <= availability, name=f"availability_{w}_{p}_{d}_{s}")
+
+for p in departments:
+    for d in days:
+        for s in shifts:
+            min_workers = dept_df[(dept_df['Department'] == p) &
+                                  (dept_df['Day'] == d) &
+                                  (dept_df['Shift'] == s)]['Min_Workers'].values[0]
+            max_workers = dept_df[(dept_df['Department'] == p) &
+                                  (dept_df['Day'] == d) &
+                                  (dept_df['Shift'] == s)]['Max_Workers'].values[0]
+            model.addConstr(
+                gp.quicksum(x[w, p, d, s] for w in workers) >= min_workers,
+                name=f"min_staff_{p}_{d}_{s}"
+            )
+            model.addConstr(
+                gp.quicksum(x[w, p, d, s] for w in workers) <= max_workers,
+                name=f"max_staff_{p}_{d}_{s}"
+            )
+
+for w in workers:
+    for d in days:
+        model.addConstr(
+            gp.quicksum(x[w, p, d, s] for p in departments for s in shifts) <= 1,
+            name=f"daily_limit_{w}_{d}"
+        )
+
+for w in workers:
+    model.addConstr(
+        gp.quicksum(x[w, p, d, s] for p in departments for d in days for s in shifts) <= 5,
+        name=f"weekly_limit_{w}"
+    )
+
+model.optimize()
+
+if model.status == GRB.OPTIMAL:
+    solution = [(w, p, d, s) for w, p, d, s in x.keys() if x[w, p, d, s].x > 0.5]
+    print("Optimal solution found.")
+    for w, p, d, s in solution:
+        print(f"Worker {w} assigned to Department {p}, Shift {s}, Day {d}")
+else:
+    print("No optimal solution found.")
